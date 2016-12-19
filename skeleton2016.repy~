@@ -13,7 +13,7 @@
 #output:
 #	A list with votes to send to the loyal nodes
 #	in the form [True,False,True,.....]
-def compute_byzantine_vote_round1(no_loyal,no_total,on_tie):
+def compute_byzantine_vote_round1(no_loyal,on_tie):
 
   result_vote = []
   for i in range(0,no_loyal):
@@ -66,8 +66,8 @@ def start_board():
 def board_connection_handler(ip, port, sockobj, thiscommhandle, listencommhandle):
   try:
     msgheader = sockobj.recv(1024) # Receive message
-    
-    print '****Request:\n%s' % msgheader
+    if not msgheader.startswith('GET'):
+      print '****Request:\n%s' % msgheader
     # React depending on message type: HTTP GET or POST, or some other type of communication.
     if msgheader.startswith( 'GET' ):
       if msgheader.startswith("GET /vote/result"):
@@ -76,26 +76,93 @@ def board_connection_handler(ip, port, sockobj, thiscommhandle, listencommhandle
         get_board_handler(msgheader, sockobj, thiscommhandle)
 
     elif msgheader.startswith('POST /vote/attack'):
-      mycontext['myvote'] = True
-      send_to_vessels(True,3)
+      mycontext['vote_vector'][mycontext['identifier']] = str(True) 
+      send_to_vessels(True,3,1)
+      if len(mycontext['vote_vector']) == len(mycontext['vessels'])+1:
+        mycontext['vote_vector_vector'][mycontext['identifier']] = mycontext['vote_vector']
+        send_to_vessels(mycontext['vote_vector'],3,2)
       res=make_http_response(200,'OK','')
       sockobj.send(res)
       stopcomm(thiscommhandle)
 
     elif msgheader.startswith('POST /vote/retreat'):
-      mycontext['myvote'] = False
-      send_to_vessels(False,3)
+      mycontext['vote_vector'][mycontext['identifier']] = str(False)
+      send_to_vessels(False,3,1)
+      if len(mycontext['vote_vector']) == len(mycontext['vessels'])+1:
+        mycontext['vote_vector_vector'][mycontext['identifier']] = mycontext['vote_vector']
+        send_to_vessels(mycontext['vote_vector'],3,2)
       res=make_http_response(200,'OK','')
       sockobj.send(res)
       stopcomm(thiscommhandle)
 
-    elif msgheader.startswith('POST /neighbour/vote'):
+    elif msgheader.startswith('POST /neighbour/vote1'):
       query = extract_http_request_contents(msgheader)
       parameters = extract_parameters_from_query(query)
       recvote = parameters['vote']
-      id = parameters['id']
-      mycontext[vote_vector][id] = recvote
-      print parameters['vote']
+      nodeid = parameters['id']
+      mycontext['vote_vector'][nodeid] = recvote
+      #print len(mycontext['vote_vector'])
+      if len(mycontext['vote_vector']) == len(mycontext['vessels'])+1:
+        mycontext['vote_vector_vector'][mycontext['identifier']] = mycontext['vote_vector']
+        send_to_vessels(mycontext['vote_vector'],3,2) 
+      print str(mycontext['vote_vector'])
+
+    elif msgheader.startswith('POST /neighbour/vote2'):
+      print "----------inside vote2-----------"
+      query = extract_http_request_contents(msgheader)
+      #print len(mycontext['vote_vector_vector'])
+      parameters = extract_parameters_from_query(query)
+      #format string to hash 
+      #print parameters['vote']
+      #print format_to_dict(parameters['vote'])
+      if mycontext['isbyzantine']:
+        byz_vector_votes = compute_byzantine_vote_round2(4,len(mycontext['vessels'])+1,True)
+        #print byz_vector_votes
+        for i in range(len(mycontext['vessels'])):
+          send_to_vessel(format_vector_to_dict(byz_vector_votes[i]), 3, 2, mycontext['vessels'][i])
+        mycontext['vote_result'] = "<pre>byzantine</pre>"
+        mycontext['isbyzantine'] = False
+        vote_vector = {}
+        mycontext['vote_vector'] = vote_vector
+        vote_vector_vector = {}
+        mycontext['vote_vector_vector'] = vote_vector_vector
+        result_vector = {}
+        mycontext['result_vector'] = result_vector
+        for vesselid in mycontext['vessels']:
+          if mycontext['global']:
+            mycontext['result_vector'][str(vesselid[0])] = 0
+          else: 
+            mycontext['result_vector'][str(vesselid[1])] = 0
+        mycontext['result_vector'][mycontext['identifier']] = 0
+        
+      else: 
+        mycontext['vote_vector_vector'][parameters['id']] = format_to_dict(parameters['vote'])
+        if len(mycontext['vote_vector_vector']) == len(mycontext['vessels'])+1:
+          majoritycolumn = majority_column_vote(mycontext['vote_vector_vector'])
+          finalresult = majority_vector(majoritycolumn)
+          mycontext['vote_result'] = "<pre>"+str(finalresult)+"</pre>" + "<br><pre>"+ str(majoritycolumn)+"</pre>"
+          vote_vector = {}
+          mycontext['vote_vector'] = vote_vector
+          vote_vector_vector = {}
+          mycontext['vote_vector_vector'] = vote_vector_vector
+          result_vector = {}
+          mycontext['result_vector'] = result_vector
+          for vesselid in mycontext['vessels']:
+            if mycontext['global']:
+              mycontext['result_vector'][str(vesselid[0])] = 0
+            else: 
+              mycontext['result_vector'][str(vesselid[1])] = 0
+          mycontext['result_vector'][mycontext['identifier']] = 0
+
+    elif msgheader.startswith('POST /vote/byzantine'):
+      mycontext['isbyzantine'] = True
+      byz_vote_list = compute_byzantine_vote_round1(len(mycontext['vessels']), True)
+      for i in range(len(mycontext['vessels'])):
+        send_to_vessel(str(byz_vote_list[i]), 3, 1, mycontext['vessels'][i])
+      res=make_http_response(200,'OK','')
+      sockobj.send(res)
+      stopcomm(thiscommhandle)
+        
       
     else:
       other_requests_handler(msgheader, sockobj, thiscommhandle)
@@ -104,24 +171,91 @@ def board_connection_handler(ip, port, sockobj, thiscommhandle, listencommhandle
     print "Exception in board: %s, %s\n" %(type(e), e)
     #raise
 
+# ----------------------------------------------------------------------------
+# Format string to dict 
+# ---------------------------------------------------------------------------- 
+def format_to_dict(string):
+  vectordict = {}
+  formatstring = (" " + string[1:-1]).split(',')
+  for pair in formatstring:
+     key = pair.split(':')[0][2:-1]
+     value = pair.split(':')[1][2:-1]
+     vectordict[key] = value
+  return vectordict
+
+# ----------------------------------------------------------------------------
+# Format vector to dict 
+# ---------------------------------------------------------------------------- 
+def format_vector_to_dict(vector):
+  vectordict = {}
+  vectordict[mycontext['identifier']]= str(vector[len(mycontext['vessels'])])
+  for i in range(0,len(mycontext['vessels'])):
+    if mycontext['global']:
+      vectordict[mycontext['vessels'][i][0]] = str(vector[i])
+    else: 
+      vectordict[mycontext['vessels'][i][1]] = str(vector[i])
+  return vectordict
+
+# ------------------------------------------------------------------------------
+# Majority column vote 
+# vote dict = vote vector vector 
+# ------------------------------------------------------------------------------
+def majority_column_vote(votedict):
+  result_vector = {}
+  print votedict 
+  for key0 in votedict:
+    for key1 in votedict[key0]:
+      if votedict[key0][key1] == 'True':
+        mycontext['result_vector'][key1] += 1 
+      else: 
+        mycontext['result_vector'][key1] -= 1 
+  for key in mycontext['result_vector']:
+    if mycontext['result_vector'][key] < 0:
+      result_vector[key] = 'False'
+    elif mycontext['result_vector'][key] > 0:
+      result_vector[key] = 'True'
+    else: 
+     result_vector[key] = 'UNKNOWN'
+  return result_vector 
+
+# ------------------------------------------------------------------------------
+# Majority vector vote 
+# ------------------------------------------------------------------------------
+def majority_vector(votevector):
+  finalres = 0
+  for vote in votevector:
+    print vote
+    if votevector[vote] == 'True':
+      finalres += 1
+    elif votevector[vote] == 'False': 
+      finalres -= 1
+  if finalres < 0:
+    return False
+  else:
+    return True
+
+
 # ------------------------------------------------------------------------------
 # Send to vessels 
 # ------------------------------------------------------------------------------
-def send_to_vessels(vote,testnmbr):
+def send_to_vessels(vote,testnmbr,round):
   for sock in mycontext['vessels']:
-    send_to_vessel(vote,testnmbr,sock)
+    send_to_vessel(vote,testnmbr,round,sock)
 
-def send_to_vessel(vote,testnmbr,sock):
+def send_to_vessel(vote,testnmbr,round,sock):
   try:
     msg = ("id=" + mycontext['identifier'] + "&vote=" + str(vote))
     socketobject = openconn(sock[0],int(sock[1]))
     http_res = make_http_response(200,'OK',msg)
-    send_object = 'POST /neighbour/vote' + http_res   
+    if round == 1:
+      send_object = 'POST /neighbour/vote1 ' + http_res
+    elif round == 2:    
+      send_object = 'POST /neighbour/vote2 ' + http_res
     socketobject.send(send_object)
     socketobject.close()
   except:  
     if(testnmbr != 0):
-      send_to_vessel(vote,testnmbr-1,sock)
+      send_to_vessel(vote,testnmbr-1,round,sock)
     else:
       if mycontext['global']:
         print "error in connection to vessel: " + sock[0]
@@ -251,7 +385,10 @@ if callfunc == 'initialize':
   mycontext['vote_vector'] = vote_vector
   vote_vector_vector = {}
   mycontext['vote_vector_vector'] = vote_vector_vector
-  
+  result_vector = {}
+  mycontext['result_vector'] = result_vector
+  mycontext['isbyzantine'] = False
+  mycontext['task'] = 'A'
 
 
   #Initialize Port and IP
@@ -261,27 +398,37 @@ if callfunc == 'initialize':
   mycontext['identifier']=''
   
   #read html template files
-  mycontext['vote_result'] = "<pre> Voting results... </pre>"
+  
   #mycontext['vote_result'] = file("vote_result_template.html").read() 
-  mycontext['vote_frontpage'] = file("vote_frontpage_template.html").read()
+  
   #mycontext['entry_template'] = file("entry_template.html").read()
   #mycontext['boardcontents_template'] = file("boardcontents_template.html").read()
   #mycontext['frontpage_header_template'] = file("board_frontpage_header_template.html").read()
   #mycontext['frontpage_footer_template'] = file("board_frontpage_footer_template.html").read()
   
   if mycontext['global']:
-    vessels = file("neighborlist.txt").read().split()
+    if mycontext['task']=='A':
+      vessels = file("neighborlist1A.txt").read().split()
+    else:
+      vessels = file("neighborlist1B.txt").read().split()
     mycontext['identifier'] = str(ip)
     for line in vessels:
+      mycontext['result_vector'][line] = 0
       if(ip != line):
         mycontext['vessels'].append((line,mycontext['port']))
   else:
-    vessels = file("localports.txt").read().split()
+    if mycontext['task']=='A':
+      vessels = file("localports1A.txt").read().split()
+    else:
+      vessels = file("localports1B.txt").read().split()
     mycontext['identifier'] = str(port)
     for line in vessels:
+      mycontext['result_vector'][line] = 0
       if(str(port) != line):
         mycontext['vessels'].append((mycontext['ip'],line))  
-    
+
+  mycontext['vote_result'] = "<pre>" +  str(mycontext['identifier']) + "</pre></br>" 
+  mycontext['vote_frontpage'] = file("vote_frontpage_template.html").read() 
 
   #mycontext['authors'] = "sample author"
 

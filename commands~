@@ -1,0 +1,7 @@
+loadkeys isak
+as isak
+browse 
+on browsegood
+upload vote_frontpage_template.html
+upload neighborlist1A.txt
+run skeleton2016.repy 63159
